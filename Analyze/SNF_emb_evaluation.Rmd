@@ -1,0 +1,648 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(SNFtool)
+library(data.table)
+library(dplyr)
+library(pheatmap)
+library(SNFtool)
+library(mltools)
+library(survival)
+
+NL_spectralClustering <- function (NL, K, type = 3) 
+{
+	eig <- eigen(NL)
+	res <- sort(abs(eig$values), index.return = TRUE)
+	U <- eig$vectors[, res$ix[1:K]]
+	normalize <- function(x) x/sqrt(sum(x^2))
+	if (type == 3) {
+		U <- t(apply(U, 1, normalize))
+	}     
+	
+	eigDiscrete <- SNFtool:::.discretisation(U)
+	eigDiscrete <- eigDiscrete$discrete
+	labels <- apply(eigDiscrete, 1, which.max)
+	return(labels)
+}
+
+get_cox_pvalue<-function(group){
+  one_hot_group <- matrix(0, 215, max(group))
+  for (i in 1:215){
+    one_hot_group[i,group[i]]<-1
+  }
+  tt<-coxph(Surv( survival,censor ) ~ one_hot_group)
+  return(summary(tt))
+}
+
+get_cox_pvalue2<-function(group){
+  tt<-coxph(Surv( survival,censor ) ~ group)
+  return(summary(tt))
+}
+
+
+```
+
+
+```{r setup, include=FALSE}
+library(SNFtool)
+library(data.table)
+library(dplyr)
+
+rm(list= ls())
+##40 ,3 
+###20 0.6
+####30 0.3
+K = 20;##number of neighbors, usually (10~30)
+alpha = 1 ##hyperparameter, usually (0.3~0.8)
+T = 17; ###Number of Iterations, usually (10~20)
+C = 3###number of clusters
+use.corr <- F
+
+
+gene <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM/GLIO_Gene_Expression.txt", header = F, sep = "\t", dec = ".")[,2:216])
+methy <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM/GLIO_Methy_Expression.txt", header = F, sep = "\t", dec = ".")[,2:216])
+mirna <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM/GLIO_Mirna_Expression.txt", header = F, sep = "\t", dec = ".")[,2:216])
+survival <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM/GLIO_Survival.txt", header = F, sep = "\t", dec = ".")[-1,2])
+
+censor <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM/GLIO_Survival.txt", header = F, sep = "\t", dec = ".")[-1,3])
+
+
+
+gene = t(gene)
+methy = t(methy)
+mirna = t(mirna)
+
+
+
+
+
+```
+
+
+
+
+```{r Load embedding and similarity matrix from Deep}
+
+version_name<-'51'
+use.emb <- F
+K_arg <- 20
+alpha_arg <- 1
+if (use.emb){
+  emb_name <- paste('emb_v',version_name,sep = '')
+}else{
+  emb_name <- paste('W_v',version_name,sep = '')
+}
+
+
+project_path = "/Users/danialmalakmohammad/PycharmProjects/GVAE"
+res_emb_path =paste(project_path,"/gvae_fusion_results/",emb_name,".txt",sep = "")
+spec_path <- paste("K",K,"_alpha",alpha,"_T",T,sep="")
+evaluation_results_path <- paste(project_path,"/pheatmap_png/emb_deep_evaluation/",emb_name,"_",spec_path,sep = "")
+
+dir.create(evaluation_results_path)
+
+
+emb <- data.matrix(fread(res_emb_path, header = F, sep = "\t", dec = "."))
+
+if (use.emb){
+  #emb <- standardNormalization(emb)
+  Dist_emb =  dist2(as.matrix(emb),as.matrix(emb));
+  W_emb =affinityMatrix(Dist_emb, K_arg, alpha_arg)
+
+}else{
+  W_emb <- as.matrix(emb)
+}
+
+
+
+
+rownames(W_emb) <- survival
+colnames(W_emb) <- survival
+
+```
+
+
+```{r}
+emb_dim = 100
+tmp <- matrix(0, 1, emb_dim)
+for (i in 1:emb_dim){
+  tt<-coxph(Surv( survival,censor ) ~ emb[,i])
+  tmp[i] <- summary(tt)[[9]][3]
+}
+tmp = p.adjust(tmp)
+od = order(tmp)
+tmp[od][0:100]
+
+```
+
+
+
+```{r}
+
+#group_sc <- NL_spectralClustering(W_arg,7, type = 3)
+#group_sc
+#get_cox_pvalue(group_sc)
+
+W_arg <- W_emb
+clustering_method<-'NL_SC'
+
+if(clustering_method=='NL_SC'){
+  group_sc <- NL_spectralClustering(W_arg,3, type = 3)
+}
+if(clustering_method=='max_col_emb'){
+  group_sc <- max.col(emb)
+}
+if(clustering_method=='kmeans_emb'){
+  group_sc <- kmeans(emb, 3, nstart = 25)$cluster
+}
+
+
+mean(survival[group_sc==1])
+mean(survival[group_sc==2])
+mean(survival[group_sc==3])
+group_sc
+
+get_cox_pvalue(group_sc)[[9]][3]
+#pheatmap(W_arg,cluster_rows=T,cluster_cols=T)
+pvalues = matrix(0,1,10)
+for (i in 2:10){
+  
+  if(clustering_method=='NL_SC'){
+    group_sc <- NL_spectralClustering(W_arg,i, type = 3)
+  }
+  if(clustering_method=='max_col_emb'){
+    group_sc <- max.col(emb)
+  }
+  if(clustering_method=='kmeans_emb'){
+    group_sc <- kmeans(emb, i, nstart = 25)$cluster
+  }  
+  pvalues[1,i] <- get_cox_pvalue(group_sc)[[9]][3]
+  }
+pvalues
+
+```
+
+
+```{r similarity matrices calculation}
+
+
+methy = standardNormalization(methy);
+gene = standardNormalization(gene);
+mirna = standardNormalization(mirna);
+
+###Calculate the pair-wise distance; If the data is continuous, we recommend to use the function "dist2" as follows; if the data is discrete, we recommend the users to use ""
+if (!use.corr) {
+  Dist_methy = dist2(as.matrix(methy),as.matrix(methy));
+  Dist_gene = dist2(as.matrix(gene),as.matrix(gene));
+  Dist_mirna = dist2(as.matrix(mirna),as.matrix(mirna));
+} else {
+  Dist_methy = 1 - cor(t(as.matrix(methy)));
+  Dist_gene = 1 - cor(t(as.matrix(gene)));
+  Dist_mirna = 1 - cor(t(as.matrix(mirna)));
+}
+
+
+###next, construct similarity graphs
+W_methy = affinityMatrix(Dist_methy, K, alpha)
+W_gene = affinityMatrix(Dist_gene, K, alpha)
+W_mirna = affinityMatrix(Dist_mirna, K, alpha)
+
+
+rownames(W_methy) <- survival
+colnames(W_methy) <- survival
+rownames(W_gene) <- survival
+colnames(W_gene) <- survival
+rownames(W_mirna) <- survival
+colnames(W_mirna) <- survival
+
+```
+
+```{r SNF}
+library(SNFtool)
+W_fused = SNF(list(W_gene,W_methy,W_mirna), K, T)
+
+rownames(W_fused) <- survival
+colnames(W_fused) <- survival
+
+```
+
+
+
+
+
+```{r Clustering}
+library(factoextra)
+
+W_arg<-W_emb
+C_arg<-C
+
+group_kmeans <- kmeans(W_arg, C_arg, nstart = 25)$cluster
+group_sc <- NL_spectralClustering(W_arg,C_arg, type = 3)
+
+mean(survival[group_sc=1])
+mean(survival[group_sc=2])
+mean(survival[group_sc=3])
+
+group_sc
+
+```
+
+
+
+```{r Cluster Visualization}
+library(pheatmap)
+library(gplots)
+
+
+save_heatmap <- function (W,file_dir) {
+	normalize <- function(X) {
+		return(X/rowSums(X))
+	}
+	diag(W) <- 0
+	W <- normalize(W)
+	W <- W + t(W)
+	
+
+	png(file_dir, width = 2000, height = 2000)
+	pheatmap(W,cluster_rows=F,cluster_cols=F)
+	dev.off()
+	
+}
+
+get_group_ind <-function(group){
+  
+  idx<- sample(1:215)
+  
+  ind<-c()
+  for (i in 1:max(group)){
+    ind <- c(ind,sample(which(group==i, arr.ind = T)))
+  }
+  
+  return(ind)
+}
+
+
+
+ind_arg <- get_group_ind(group_sc) 
+
+
+save_heatmap(W_gene[ind_arg,ind_arg], paste(evaluation_results_path,"/gene.png",sep=""))
+save_heatmap(W_methy[ind_arg,ind_arg],paste(evaluation_results_path,"/methy.png",sep=""))
+save_heatmap(W_mirna[ind_arg,ind_arg],paste(evaluation_results_path,"/mirna.png",sep=""))
+save_heatmap(W_fused[ind_arg,ind_arg],paste(evaluation_results_path,"/fused.png",sep=""))
+save_heatmap(W_emb[ind_arg,ind_arg],  paste(evaluation_results_path,"/emb.png",sep=""))
+
+
+```
+
+
+
+```{r coxph log rank test }
+library(mltools)
+library(survival)
+
+
+# W_arg<-affinityMatrix(Dist_emb,200,10)
+# group_kmeans <- kmeans(W_arg, C_arg, nstart = 25)$cluster
+# group_kmeans2 <- kmeans(emb, C_arg, nstart = 25)$cluster
+# group_sc <- spectralClustering(W_arg,C_arg, type = 3)
+# 
+# get_cox_pvalue(group_kmeans)[[9]][3]
+# #get_cox_pvalue(group_kmeans2)[[9]][3]
+# get_cox_pvalue(group_sc)[[9]][3]
+
+
+
+adjusted_pvalues_to_write <- matrix(0, 1, 5)
+
+group_sc <- spectralClustering(W_methy,C_arg, type = 3)
+adjusted_pvalues_to_write[1,1]<-get_cox_pvalue(group_sc)[[9]][3]
+
+group_sc <- spectralClustering(W_gene,C_arg, type = 3)
+adjusted_pvalues_to_write[1,2]<-get_cox_pvalue(group_sc)[[9]][3]
+
+group_sc <- spectralClustering(W_mirna,C_arg, type = 3)
+adjusted_pvalues_to_write[1,3]<-get_cox_pvalue(group_sc)[[9]][3]
+
+group_sc <- spectralClustering(W_fused,C_arg, type = 3)
+adjusted_pvalues_to_write[1,4]<-get_cox_pvalue(group_sc)[[9]][3]
+
+group_sc <- spectralClustering(W_emb,C_arg, type = 3)
+adjusted_pvalues_to_write[1,5]<-get_cox_pvalue(group_sc)[[9]][3]
+
+colnames(adjusted_pvalues_to_write)<-c("gene","methy","mirna","fused","emb")
+rownames(adjusted_pvalues_to_write)<-c("pval")
+write.table(adjusted_pvalues_to_write, paste(evaluation_results_path,"/adjusted_pvalues.txt",sep=""), append = FALSE, sep = " ", dec = ".",row.names = TRUE, col.names = TRUE)
+
+# W_arg<-affinityMatrix(Dist_gene,214,1)
+# group_sc <- spectralClustering(W_arg,C_arg, type = 3)
+# get_cox_pvalue(group_sc)[[9]][3]
+# 
+# W_arg<-affinityMatrix(Dist_methy,214,1)
+# group_sc <- spectralClustering(W_arg,C_arg, type = 3)
+# get_cox_pvalue(group_sc)[[9]][3]
+# 
+# 
+# W_arg<-affinityMatrix(Dist_mirna,214,1)
+# group_sc <- spectralClustering(W_arg,C_arg, type = 3)
+# get_cox_pvalue(group_sc)[[9]][3]
+
+```
+
+
+
+```{r cox partial log likelihood}
+library(survival)
+library(ggplot2)
+library(survminer)
+group_sc <- spectralClustering(W_emb,C_arg, type = 3)
+km_trt_fit <- survfit(Surv(time = survival,event = censor ) ~ group_sc)
+pdf( paste(evaluation_results_path,"/Kaplan_Meier.pdf",sep=""))
+ggsurvplot(
+  fit = km_trt_fit,
+  data = data.frame(survival),
+  risk.table = TRUE,
+  pval = TRUE,
+  xlab = "Time (Days)",
+  break.time.by = 500,
+  ggtheme = theme_classic(),
+  risk.table.y.text.col = T,
+  risk.table.height = 0.25,
+  risk.table.y.text = FALSE,
+  pval.method = T,
+  conf.int.style = "step",
+  surv.median.line = "hv")
+dev.off()
+
+```
+
+```{r}
+group_arg <- spectralClustering(W_emb,C_arg, type = 3)
+
+D <- data.frame(group_id = group_arg, survival_time = survival) 
+pdf( paste(evaluation_results_path,"/violin.pdf",sep=""))
+ggplot(D, aes(x = group_id, y = survival)) + geom_violin(aes(group = group_id))
+dev.off()
+
+#ggplot(D, aes(x=group_id, y=survival)) + geom_boxplot(aes(group = group_id))
+
+```
+
+
+
+
+```{r Hierarchical Clustring Visualization}
+
+W_arg <- W_emb
+W_arg <- unname(W_arg)
+library(corrplot)
+
+diag(W_arg) <- 0
+corrplot(W_arg, is.corr = F, order = "hclust", hclust.method = "average")
+
+```
+
+
+
+```{r survival classfication}
+W_arg <-W_emb
+W_arg <- unname(W_arg)
+
+qn <- quantile(survival, probs = c(0.33, 0.66, 1))
+
+label <- survival
+  
+  #(survival < qn[1]) +
+  #2 * (survival < qn[2] & survival >= qn[1]) +
+  #3 * (survival <= qn[3] & survival >= qn[2])
+
+diag(W_arg) <- 0
+NN.indx <- apply(W_arg, 1, which.max)
+sum(abs(label[NN.indx] - label))/length(label)
+```
+
+
+
+
+
+
+
+```{r Save Adjacency matrices}
+
+fwrite(data.frame(W_methy),"/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM_Adjacency_matrices/methy.txt",sep="\t")
+fwrite(data.frame(W_gene),"/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM_Adjacency_matrices/gene.txt",sep="\t")
+fwrite(data.frame(W_mirna),"/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM_Adjacency_matrices/mirna.txt",sep="\t")
+fwrite(data.frame(survival),"/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM_Adjacency_matrices/truelabel.txt",sep="\t")
+
+
+
+fwrite(data.frame(W_fused),"/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM_Adjacency_matrices/W_fused.txt",sep="\t")
+
+fwrite(data.frame(group_sc),"/Users/danialmalakmohammad/PycharmProjects/GVAE/GBM_Adjacency_matrices/group_sc_fusion.txt",sep="\t")
+
+
+
+
+```
+
+
+```{r survival t-test }
+# ANOVA & T-test & test from the paper 
+# use ggplot2 to boxplot survival time for each group
+# ss clustering (use other packages)
+
+library(ggplot2)
+
+#C_arg / group_arg
+
+
+
+get_adjusted_ttest_pvalue<-function(C_arg,group_arg){
+  p=c()
+  for (i in 1:C_arg){
+    for (j in min(c(i+1,C_arg)):C_arg){
+      if (i!=j){
+        p <- c(p,t.test(survival[group_arg==i],survival[group_arg==j])$p.value)
+      }
+    }
+  }
+  return(p.adjust(p))
+
+  }
+
+adjusted_pvalues_to_write <- matrix(0, 5, C)
+rownames(adjusted_pvalues_to_write)<-c("gene","methy","mirna","fused","emb")
+
+adjusted_pvalues_to_write[1,]<-get_adjusted_ttest_pvalue(C_arg,spectralClustering(W_gene,C_arg, type = 3))
+
+adjusted_pvalues_to_write[2,]<-get_adjusted_ttest_pvalue(C_arg,spectralClustering(W_methy,C_arg, type = 3))
+
+adjusted_pvalues_to_write[3,]<-get_adjusted_ttest_pvalue(C_arg,spectralClustering(W_mirna,C_arg, type = 3))
+
+adjusted_pvalues_to_write[4,]<-get_adjusted_ttest_pvalue(C_arg,spectralClustering(W_fused,C_arg, type = 3))
+
+adjusted_pvalues_to_write[5,]<- get_adjusted_ttest_pvalue(C_arg,spectralClustering(W_emb,C_arg, type = 3))
+
+adjusted_pvalues_to_write
+#write.table(adjusted_pvalues_to_write, paste(file_path,"/adjusted_pvalues.txt",sep=""), append = FALSE, sep = " ", dec = ".",row.names = TRUE, col.names = TRUE)
+
+
+```
+
+```{r}
+normalize <- function(X) {
+	return(X/rowSums(X))
+}
+W_tmp <- W_emb
+#W_tmp <- affinityMatrix(W_emb,20,0.3)
+
+ind_arg <- sample(1:215)
+W_tmp <- W_tmp[ind_arg,ind_arg]
+group_sc <- NL_spectralClustering(W_tmp,3, type = 3)
+#group_sc <- kmeans(emb, 2, nstart = 25)$cluster
+ind_arg_2 <- order(group_sc)
+W_tmp <- W_tmp[ind_arg_2,ind_arg_2]
+
+#ind_arg <- get_group_ind(group_sc) 
+#ind_arg <- order(survival)
+#W_tmp<-W_emb
+
+diag(W_tmp) <- 0
+#W_tmp <- normalize(W_tmp)
+#W_tmp <- W_tmp + t(W_tmp)
+
+
+png("/Users/danialmalakmohammad/Desktop/temp.png", width = 2000, height = 2000)
+pheatmap(W_tmp,cluster_rows=F,cluster_cols=F)
+dev.off()
+
+
+
+
+
+```
+
+```{r}
+```
+
+
+
+
+```{r MNIST cell1}
+K_arg <- 50
+alpha_arg<- 1
+
+mnist_x1 <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/MNIST/preprocessed/mnist_train_x1.txt", header = F, sep = "\t", dec = "."))
+
+mnist_x2 <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/MNIST/preprocessed/mnist_train_x2.txt", header = F, sep = "\t", dec = "."))
+
+mnist_x3 <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/MNIST/preprocessed/mnist_train_x3.txt", header = F, sep = "\t", dec = "."))
+
+mnist_x4 <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/MNIST/preprocessed/mnist_train_x4.txt", header = F, sep = "\t", dec = "."))
+
+
+mnist_x1 = standardNormalization(mnist_x1[1:500,]);
+mnist_x2 = standardNormalization(mnist_x2[1:500,]);
+mnist_x3 = standardNormalization(mnist_x3[1:500,]);
+mnist_x4 = standardNormalization(mnist_x4[1:500,]);
+
+Dist_mnist_x1 =  dist2(as.matrix(mnist_x1),as.matrix(mnist_x1));
+Dist_mnist_x2 =  dist2(as.matrix(mnist_x2),as.matrix(mnist_x2));
+Dist_mnist_x3 =  dist2(as.matrix(mnist_x3),as.matrix(mnist_x3));
+Dist_mnist_x4 =  dist2(as.matrix(mnist_x4),as.matrix(mnist_x4));
+
+
+W_mnist_x1 = affinityMatrix(Dist_mnist_x1, K_arg, alpha_arg)
+W_mnist_x2 = affinityMatrix(Dist_mnist_x2, K_arg, alpha_arg)
+W_mnist_x3 = affinityMatrix(Dist_mnist_x3, K_arg, alpha_arg)
+W_mnist_x4 = affinityMatrix(Dist_mnist_x4, K_arg, alpha_arg)
+
+W_mnist_x1<- unname(W_mnist_x1)
+W_mnist_x2<- unname(W_mnist_x2)
+W_mnist_x3<- unname(W_mnist_x3)
+W_mnist_x4<- unname(W_mnist_x4)
+
+
+fwrite(data.frame(W_mnist_x1),"/Users/danialmalakmohammad/PycharmProjects/GVAE/MNIST/postprocessed/W_mnist_x1.txt",sep="\t")
+fwrite(data.frame(W_mnist_x2),"/Users/danialmalakmohammad/PycharmProjects/GVAE/MNIST/postprocessed/W_mnist_x2.txt",sep="\t")
+fwrite(data.frame(W_mnist_x3),"/Users/danialmalakmohammad/PycharmProjects/GVAE/MNIST/postprocessed/W_mnist_x3.txt",sep="\t")
+fwrite(data.frame(W_mnist_x4),"/Users/danialmalakmohammad/PycharmProjects/GVAE/MNIST/postprocessed/W_mnist_x4.txt",sep="\t")
+
+
+
+```
+
+
+
+```{r MNIST cell2}
+
+version_name<-'40'
+use.emb <- F
+K_arg <- 50
+alpha_arg <- 1
+if (use.emb){
+  emb_name <- paste('emb_v',version_name,sep = '')
+}else{
+  emb_name <- paste('W_v',version_name,sep = '')
+}
+
+
+project_path = "/Users/danialmalakmohammad/PycharmProjects/GVAE"
+res_emb_path =paste(project_path,"/MNIST_results/",emb_name,".txt",sep = "")
+spec_path <- paste("K",K,"_alpha",alpha,"_T",T,sep="")
+evaluation_results_path <- paste(project_path,"/pheatmap_png/emb_deep_evaluation/",emb_name,"_",spec_path,sep = "")
+
+dir.create(evaluation_results_path)
+
+
+emb <- data.matrix(fread(res_emb_path, header = F, sep = "\t", dec = "."))
+
+if (use.emb){
+  #emb <- standardNormalization(emb)
+  Dist_emb =  dist2(as.matrix(emb),as.matrix(emb));
+  W_emb =affinityMatrix(Dist_emb, K_arg, alpha_arg)
+
+}else{
+  W_emb <- as.matrix(emb)
+}
+
+
+labels <- data.matrix(fread("/Users/danialmalakmohammad/PycharmProjects/GVAE/MNIST/preprocessed/mnist_train_y.txt", header = F, sep = "\t", dec = "."))
+labels<- labels[1:500]
+
+rownames(W_emb)<- labels
+colnames(W_emb)<- labels
+
+
+```
+
+
+```{r MNIST cell 4}
+
+group_sc <- NL_spectralClustering(W_emb, 10, type = 3)
+#group_sc <- NL_spectralClustering(W_mnist_x1,10, type = 3)
+
+
+sort(table(labels[group_sc==1]),decreasing=TRUE)
+sort(table(labels[group_sc==2]),decreasing=TRUE)
+sort(table(labels[group_sc==3]),decreasing=TRUE)
+sort(table(labels[group_sc==4]),decreasing=TRUE)
+sort(table(labels[group_sc==5]),decreasing=TRUE)
+sort(table(labels[group_sc==6]),decreasing=TRUE)
+sort(table(labels[group_sc==7]),decreasing=TRUE)
+sort(table(labels[group_sc==8]),decreasing=TRUE)
+sort(table(labels[group_sc==9]),decreasing=TRUE)
+
+
+
+
+
+```
+
+```{r}
+a = c()
+```
+
